@@ -1,3 +1,12 @@
+'''A simple tool to pack the pseudocode of a function
+
+It's used to pack the pseudocode of a function and encode it into a string, so that the pseudocode can be stored in the code and the source code will not be lose after pre-compiled and moved.
+
+  Typical usage example:
+'''
+
+__all__ = ["pseudocode", "pseudocode_pack_base"]
+
 import zlib
 import json
 import re
@@ -7,6 +16,15 @@ from warnings import warn
 
 
 def subdict(obj: object, keys: list[str]) -> dict[str, object]:
+    '''return the sub dict of attributes of obj with keys
+
+    parameters:
+    obj: object, the object to get sub dict
+    keys: list[str], the keys of attributes to get
+
+    return:
+    dict[str, object], the sub dict of attributes of obj with keys
+    '''
     return {key: getattr(obj, key) for key in keys if hasattr(obj, key)}
 
 
@@ -14,8 +32,10 @@ PSEUDOCODE_DEFAULT_ENCODING = "utf-8"
 
 
 class pseudocode_pack_base:
+    '''base class for pseudocode pack'''
 
     class pseudocode_rule:
+        '''rule for pseudocode'''
 
         rule = {
             "start_marker_pattern": "\(.*\):",
@@ -31,15 +51,33 @@ class pseudocode_pack_base:
         code = {"marker_code_format": "### {marker}"}
 
         def marker_code(self, marker: str = ""):
+            ''' return the code of marker
+
+            parameters:
+            marker: str, the marker name
+
+            return:
+            str, the code of marker
+            '''
             return self.marker_code_format.format(marker=marker)
 
         def __init__(self):
+            '''init the rule'''
             self.__dict__.update(self.__class__.rule)
             self.__dict__.update(self.__class__.rule_)
             self.__dict__.update(self.__class__.code)
 
         def deal_with(self, pseudocode_sourcelines: list[str],
                       func: FunctionType) -> list[str]:
+            '''deal with the pseudocode source lines
+
+            parameters:
+            pseudocode_sourcelines: list[str], the source lines of pseudocode
+            func: FunctionType, the function of the pseudocode
+
+            return:
+            list[str], the source lines of pseudocode after dealing with the rule
+            '''
             pseudocode_sourcelines = [
                 line.rstrip() for line in pseudocode_sourcelines
             ]
@@ -63,6 +101,16 @@ class pseudocode_pack_base:
             pseudocode_sourcelines: list[str],
             func: FunctionType,
             encoding: str = PSEUDOCODE_DEFAULT_ENCODING) -> str:
+        '''generate the pack encoded from the pseudocode source lines
+
+        parameters:
+        pseudocode_sourcelines: list[str], the source lines of pseudocode
+        func: FunctionType, the function of the pseudocode
+        encoding: str, the encoding of the pack
+
+        return:
+        str, the pack encoded
+        '''
         pseudocode_sourcelines = cls.pseudocode_rule().deal_with(
             pseudocode_sourcelines, func)
 
@@ -75,6 +123,15 @@ class pseudocode_pack_base:
     def pack_decode_from(cls,
                          pseudocode_pack_encoded: str,
                          encoding: str = PSEUDOCODE_DEFAULT_ENCODING) -> list:
+        '''decode the pack from the pack encoded
+
+        parameters:
+        pseudocode_pack_encoded: str, the pack encoded
+        encoding: str, the encoding of the pack
+
+        return:
+        list, the source lines of the pack
+        '''
         source_bytes = zlib.decompress(bytes.fromhex(pseudocode_pack_encoded))
         sourcelines = json.loads(source_bytes.decode(encoding))
         return sourcelines
@@ -83,11 +140,19 @@ class pseudocode_pack_base:
                  origin_pseudocode_pack_encoded: str,
                  warning_update: bool = False,
                  encoding: str = PSEUDOCODE_DEFAULT_ENCODING):
+        '''init the pack
+
+        parameters:
+        origin_pseudocode_pack_encoded: str, the pack encoded
+        warning_update: bool, whether to warn the update
+        encoding: str, the encoding of the pack
+        '''
         self._origin_pack_encoded = origin_pseudocode_pack_encoded
         self._warning_update = warning_update
         self.encoding = encoding
 
     def _try_warning(self):
+        '''try to warn the update and return self'''
         if self._warning_update:
             if not hasattr(self, "_warning_update_info"):
                 _warning_update_info = 'need to be updated with: \n{head}"{origin_pack_encoded}"{tail}'.format(
@@ -100,10 +165,12 @@ class pseudocode_pack_base:
 
     @property
     def origin_pack_encoded(self):
+        '''return the origin pack encoded'''
         return self._try_warning()._origin_pack_encoded
 
     @property
     def origin_pack_sourcelines(self):
+        '''return the origin pack sourcelines'''
         return self._try_warning().__class__.pack_decode_from(
             self._origin_pack_encoded, encoding=self.encoding)
 
@@ -114,11 +181,26 @@ class pseudocode:
                  dumped_pseudocode_pack_encoded: str = None,
                  pack_base: type[pseudocode_pack_base] = pseudocode_pack_base,
                  encoding=PSEUDOCODE_DEFAULT_ENCODING):
+        '''init the decorator
+
+        parameters:
+        dumped_pseudocode_pack_encoded: str, the pack encoded of the pseudocode, or default None as need to be updated
+        pack_base: type[pseudocode_pack_base], the base class of the pack
+        encoding: str, the encoding of the pack
+        '''
         self.dumped_pseudocode_pack_encoded = dumped_pseudocode_pack_encoded
         self.pack_base = pack_base
         self.encoding = encoding
 
     def __call__(self, func: FunctionType):
+        '''call the decorator
+
+        parameters:
+        func: FunctionType, the function to be changed into pseudocode
+
+        return:
+        `pseudocode_pack_base`, the pack of the pseudocode
+        '''
 
         dumped_pack_encoded = self.dumped_pseudocode_pack_encoded
 
