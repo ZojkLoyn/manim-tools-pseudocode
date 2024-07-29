@@ -13,6 +13,7 @@ import re
 import inspect
 from types import *
 from warnings import warn
+from functools import wraps
 
 
 def subdict(obj: object, keys: list[str]) -> dict[str, object]:
@@ -35,37 +36,51 @@ class pseudocode_pack_base:
     '''base class for pseudocode pack'''
 
     class pseudocode_rule:
-        '''rule for pseudocode'''
+        '''rule for pseudocode
+        
+          def pseudocode_name(start_marker):
+              code for start_marker
+              ### next_marker
+              code for next_marker
+        '''
 
-        rule = {
-            "start_marker_pattern": "\(.*\):",
-            "start_marker_slice": slice(1, -2),
-            "marker_pattern": "\s*###\s*.*\s*"
+        ## prefix_str, is_code_pre-compiled, ..., clip_slice, pattern
+        pattern = {
+            "start_marker":
+            ("\s*def\s*{func_name}%s", False, slice(1, -2), "\(.*\):"),
+            "marker": ("\s*%s", True, slice(3, None), "###\s*.*\s*"),
         }
-        rule_ = {
-            "start_marker_pattern_compiled":
-            re.compile(rule["start_marker_pattern"]),
-            "def_str_pattern":
-            "\s*def\s*{func_name}%s" % rule["start_marker_pattern"],
+        pattern_code = {
+            key + "_code": value[0] % value[-1]
+            for key, value in pattern.items()
         }
-        code = {"marker_code_format": "### {marker}"}
+        pattern_pattern = {
+            key + "_pattern": value[-1]
+            for key, value in pattern.items()
+        }
+        pattern_slice = {
+            key + "_slice": value[-2]
+            for key, value in pattern.items()
+        }
+        pattern_code_compiled = {
+            key + "_code_compiled": re.compile(value[0] % value[-1])
+            for key, value in pattern.items() if value[1]
+        }
+        pattern_pattern_compiled = {
+            key + "_pattern_compiled": re.compile(value[-1])
+            for key, value in pattern.items()
+        }
+        rule = dict(**pattern_code, **pattern_code_compiled, **pattern_pattern,
+                    **pattern_slice, **pattern_pattern_compiled)
 
-        def marker_code(self, marker: str = ""):
-            ''' return the code of marker
-
-            parameters:
-            marker: str, the marker name
-
-            return:
-            str, the code of marker
-            '''
-            return self.marker_code_format.format(marker=marker)
+        def clip_pattern(self, attr: str, line: str) -> str:
+            return getattr(self, attr +
+                           "_pattern_compiled").search(line).group()[getattr(
+                               self, attr + "_slice")].strip()
 
         def __init__(self):
             '''init the rule'''
             self.__dict__.update(self.__class__.rule)
-            self.__dict__.update(self.__class__.rule_)
-            self.__dict__.update(self.__class__.code)
 
         def deal_with(self, pseudocode_sourcelines: list[str],
                       func: FunctionType) -> list[str]:
@@ -78,22 +93,44 @@ class pseudocode_pack_base:
             return:
             list[str], the source lines of pseudocode after dealing with the rule
             '''
+
             pseudocode_sourcelines = [
                 line.rstrip() for line in pseudocode_sourcelines
+                if not line.isspace()
             ]
-            def_str_pattern_compiled = re.compile(
-                self.def_str_pattern.format(func_name=func.__name__))
+            ## get the head line of function def
+            start_marker_code_compiled = re.compile(
+                self.start_marker_code.format(func_name=func.__name__))
             head = 0
-            while def_str_pattern_compiled.fullmatch(
+            while start_marker_code_compiled.fullmatch(
                     pseudocode_sourcelines[head]) is None:
                 head += 1
+
+            ## get start_marker
             def_str = pseudocode_sourcelines[head]
-            start_marker = self.start_marker_pattern_compiled.search(
-                def_str).group()[self.start_marker_slice].strip()
+            start_marker = self.clip_pattern("start_marker", def_str)
 
-            start_marker_code = self.marker_code(start_marker)
+            ## get the source pack
+            pack = [[start_marker, []]]
+            indents = []
 
-            return [start_marker_code] + pseudocode_sourcelines[head + 1:]
+            for line in pseudocode_sourcelines[head + 1:]:
+                if self.marker_code_compiled.fullmatch(line) is not None:
+                    ## pack
+                    marker = self.clip_pattern("marker", line)
+                    pack.append([marker, []])
+                else:
+                    pack[-1][-1].append(line)
+
+                    line_indent = line.find(line.lstrip())
+                    indents.append(line_indent)
+
+            ## remove indent
+            least_indent = min(indents)
+            for block in pack:
+                block[-1] = [line[least_indent:] for line in block[-1]]
+
+            return pack
 
     @classmethod
     def generate_pack_encoded(
@@ -111,10 +148,10 @@ class pseudocode_pack_base:
         return:
         str, the pack encoded
         '''
-        pseudocode_sourcelines = cls.pseudocode_rule().deal_with(
+        pseudocode_sourcepack = cls.pseudocode_rule().deal_with(
             pseudocode_sourcelines, func)
 
-        source_bytes = json.dumps(pseudocode_sourcelines,
+        source_bytes = json.dumps(pseudocode_sourcepack,
                                   separators=(',', ':')).encode(encoding)
         source_compressed_bytes = zlib.compress(source_bytes)
         return source_compressed_bytes.hex()
@@ -130,15 +167,18 @@ class pseudocode_pack_base:
         encoding: str, the encoding of the pack
 
         return:
-        list, the source lines of the pack
+        list, the source pack of the pack
         '''
         source_bytes = zlib.decompress(bytes.fromhex(pseudocode_pack_encoded))
-        sourcelines = json.loads(source_bytes.decode(encoding))
-        return sourcelines
+        sourcepack = json.loads(source_bytes.decode(encoding))
+        return sourcepack
+
+    WRAPPER_ASSIGNMENTS = ('__module__', '__name__', '__qualname__', '__doc__')
 
     def __init__(self,
                  origin_pseudocode_pack_encoded: str,
                  warning_update: bool = False,
+                 func: FunctionType | None = None,
                  encoding: str = PSEUDOCODE_DEFAULT_ENCODING):
         '''init the pack
 
@@ -151,11 +191,37 @@ class pseudocode_pack_base:
         self._warning_update = warning_update
         self.encoding = encoding
 
+        self._source_pack = self.__class__.pack_decode_from(
+            origin_pseudocode_pack_encoded, encoding=encoding)
+        self._dict_index = {
+            block[0]:block[1] for block in self._source_pack
+        }
+
+        ## update wrapper
+        if func is not None:
+            for attr in self.__class__.WRAPPER_ASSIGNMENTS:
+                setattr(self, attr, getattr(func, attr))
+
+        self._try_warning()
+    
+    def __getitem__(self,index:str):
+        return self._dict_index[index]
+    
+    def __call__(self,return_line:bool = False):
+        if return_line:
+            for block in self._source_pack:
+                for line in block[1]:
+                    yield line
+        else:
+            for block in self._source_pack:
+                yield block
+
     def _try_warning(self):
         '''try to warn the update and return self'''
         if self._warning_update:
             if not hasattr(self, "_warning_update_info"):
-                _warning_update_info = 'need to be updated with: \n{head}"{origin_pack_encoded}"{tail}'.format(
+                _warning_update_info = '"{func_name}" need to be updated with: \n{head}"{origin_pack_encoded}"{tail}'.format(
+                    func_name=self.__qualname__,
                     head="=" * 8 + "\n",
                     tail="\n" + "=" * 8,
                     origin_pack_encoded=self._origin_pack_encoded)
@@ -166,13 +232,12 @@ class pseudocode_pack_base:
     @property
     def origin_pack_encoded(self):
         '''return the origin pack encoded'''
-        return self._try_warning()._origin_pack_encoded
+        return self.origin_pack_encoded
 
     @property
-    def origin_pack_sourcelines(self):
+    def origin_pack_sourcepack(self):
         '''return the origin pack sourcelines'''
-        return self._try_warning().__class__.pack_decode_from(
-            self._origin_pack_encoded, encoding=self.encoding)
+        return self._source_pack
 
 
 class pseudocode:
@@ -220,23 +285,34 @@ class pseudocode:
                 warning_update = True
             else:
                 warning_update = False
-            pack = self.pack_base(source_pack_encoded, warning_update)
+            pack = self.pack_base(source_pack_encoded, warning_update, func)
 
         else:
-            pack = self.pack_base(dumped_pack_encoded, False)
+            pack = self.pack_base(dumped_pack_encoded, False, func)
 
         return pack
 
 
 if __name__ == "__main__":
 
+    class bibi:
+
+        @pseudocode(
+            "789c8b8e562a4f2c57d289568a51ca4bcccd8c5152d2512a482c2e568a8d8d050084cb08f4"
+        )
+        def hoho(waw):
+            "nami"
+            pass
+
     @pseudocode(
-        "789c8b5652008294d434858ccc8c4c8df2fc724dab983c251db03008941455a20a8040767e6a3e8a606a45726a4109a6c2c4e844abc494e258a0442c007b5b19fe"
+        "789c8b8e562acf2f57d289562a29aab4528a8d05b212f3f24b32528be273138bb2538b40720a40909d9f9aafa4a3945a919c5a50620564810413a313ad12538a63811a63018ae01732"
     )
     def hihi(wow):
         try:
+            ### another_marker
             koeo
         except:
             a[a:ads]
 
-    print(hihi.origin_pack_sourcelines)
+    print([line for line in hihi(return_line=True)])
+    print(bibi.hoho.origin_pack_sourcepack)
